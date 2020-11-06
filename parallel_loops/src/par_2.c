@@ -1,67 +1,128 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <omp.h>
+#include <mpi.h>
 
-#define ISIZE 1000
-#define JSIZE 1000
+#define ISIZE 5000
+#define JSIZE 10000
+
+#define ROOT 0
 
 int main(int argc, char **argv)
 {
-    static double a[ISIZE][JSIZE];
-    static double b[ISIZE][JSIZE];
     int i, j;
-    FILE *ff;
+    double **a;
 
-    #pragma omp parallel shared(a, b) private(i, j)
-    {
-		double start = omp_get_wtime();
+	int ind, ind_i, ind_j;
+	
+	int size = 0;
+	int rank = 0;
 
-		int num = omp_get_thread_num();
-		int num_threads = omp_get_num_threads();
+	double start, end;
 
-		// there are no dependencies here therefore we are able to parallel both loops
-		#pragma omp for schedule(static) collapse(1)
-		for (i=0; i<ISIZE; i++)
-		{
-			for (j=0; j<JSIZE; j++)
-			{
-				a[i][j] = 10*i +j;
-				b[i][j] = 10*i +j;
-			}
-		}
+	MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-		// there are loop independent dependencies here
-		// distance vector (-1,6), direction vector (>,<) - anti dependency
-		// we are able to parallel inner loop without constraints
-		// it is also possible to parallel outer loop with preliminary data backup (a->b)
-		#pragma omp for schedule(static) collapse(1)
-		for (i=1; i<ISIZE-1; i++)
-		{
-			for (j = 6; j < JSIZE-1; j++)
-			{
-				a[i][j] = sin(0.00001*b[i+1][j-6]);
-			}
-		}
-
-		double end = omp_get_wtime();
-		if (num == 0)
-		{
-			printf("%d\t%lf\n", num_threads, end-start);
-		}
+	long long unsigned int job_size = ISIZE*JSIZE;
+	int per_proc = job_size / size;
+	if (job_size % size)
+	{
+		per_proc++;
 	}
+	
+	job_size = per_proc * size;
 
-    ff = fopen("program_results/par_result_2.txt","w");
+	double *array = calloc(sizeof(double), job_size);
+	double *sub_array = calloc(sizeof(double), per_proc);
 
-    for(i=0; i < ISIZE; i++)
-    {
-        for (j=0; j < JSIZE; j++)
+	if(rank==0)
+	{
+		// --------- INIT ------- //
+
+		a = calloc(sizeof(double *), ISIZE);
+		for (i = 0; i < ISIZE; i++)
+		{
+			a[i] = calloc(sizeof(double), JSIZE);
+		}
+
+		for (i=0; i<ISIZE; i++)
         {
-            fprintf(ff,"%f ",a[i][j]);
+            for (j=0; j<JSIZE; j++)
+            {
+                a[i][j] = 10*i +j;
+            }
         }
 
-        fprintf(ff,"\n");
-    }
+		// --------- FLATTEN ------- //
+		for (i=0; i<ISIZE; i++)
+        {
+            for (j=0; j<JSIZE; j++)
+            {
+				array[i*JSIZE+j] = a[i][j];
+            }
+        }
 
-    fclose(ff);
+		start = MPI_Wtime();
+	}
+
+		// --------- COMPUTE ------- //
+
+		MPI_Bcast(array, job_size, MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+		for (i = 0; i < per_proc; i++)
+        {
+			ind = rank * per_proc + i;
+			ind_i = ind / JSIZE;
+			ind_j = ind % JSIZE;
+			if ((ind_j >= 6) && (ind_j < JSIZE - 1) && (ind_i >= 1) && (ind_i < ISIZE - 1))
+			{
+				sub_array[i] = sin(0.00001*array[(ind_i + 1) * JSIZE + (ind_j - 6)]);
+			}
+			else
+			{
+				sub_array[i] = array[ind_i * JSIZE + ind_j];
+			}
+        }
+		MPI_Gather(sub_array, per_proc, MPI_DOUBLE, array, per_proc, MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+
+	if (rank==0)
+	{
+		end = MPI_Wtime();
+		printf("%d\t%lf\n", size, end-start);
+
+		// --------- RESHAPE ------- //
+		for (i=0; i<ISIZE; i++)
+        {
+            for (j=0; j<JSIZE; j++)
+            {
+				a[i][j] = array[i*JSIZE+j];
+            }
+        }
+
+		// --------- SAVE ------- //
+		FILE *ff = fopen("program_results/par_result_2.txt","w");
+		for(i=0; i < ISIZE; i++)
+		{
+			for (j=0; j < JSIZE; j++)
+			{
+				fprintf(ff,"%f ",a[i][j]);
+			}
+
+			fprintf(ff,"\n");
+		}
+
+		fclose(ff);
+
+		for (i = 0; i < ISIZE; i++)
+		{
+			free(a[i]);
+		}
+
+		free(a);
+		free(array);
+	}
+
+	free(sub_array);
+	
+	MPI_Finalize();
 }
