@@ -1,0 +1,4 @@
+ssh s71101@remote.vdi.mipt.ru -p 52960
+2769889Vl
+mpicc 1.c
+mpirun -n 10 a.out
